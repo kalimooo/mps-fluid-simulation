@@ -27,13 +27,38 @@ using namespace glm;
 ///////////////////////////////////////////////////////////////////////////////
 // Global constants
 ///////////////////////////////////////////////////////////////////////////////
-#define DIM 2
-#define PARTCILE_DISTANCE 0.025
-#define DT 0.001
-#define OUTPUT_INTERVAL 20
-#define ARRAY_SIZE 5000
-#define FINISH_TIME 2.0
-
+#define DIM                  2
+#define PARTICLE_DISTANCE    0.025
+#define DT                   0.001
+#define OUTPUT_INTERVAL      20
+#define ARRAY_SIZE           5000
+#define FINISH_TIME          2.0
+#define KINEMATIC_VISCOSITY  (1.0E-6)
+#define FLUID_DENSITY        1000.0 
+#define GRAVITY_X  0.0      
+#define GRAVITY_Y  -9.8
+#define GRAVITY_Z  0.0      
+#define RADIUS_FOR_NUMBER_DENSITY  (2.1*PARTICLE_DISTANCE) 
+#define RADIUS_FOR_GRADIENT        (2.1*PARTICLE_DISTANCE) 
+#define RADIUS_FOR_LAPLACIAN       (3.1*PARTICLE_DISTANCE) 
+#define COLLISION_DISTANCE         (0.5*PARTICLE_DISTANCE)
+#define THRESHOLD_RATIO_OF_NUMBER_DENSITY  0.97   
+#define COEFFICIENT_OF_RESTITUTION 0.2
+#define COMPRESSIBILITY (0.45E-9)
+#define EPS             (0.01 * PARTICLE_DISTANCE)     
+#define ON              1
+#define OFF             0
+#define RELAXATION_COEFFICIENT_FOR_PRESSURE 0.2
+#define GHOST  -1
+#define FLUID   0
+#define WALL    2
+#define DUMMY_WALL  3
+#define GHOST_OR_DUMMY  -1
+#define SURFACE_PARTICLE 1    
+#define INNER_PARTICLE   0      
+#define DIRICHLET_BOUNDARY_IS_NOT_CONNECTED 0 
+#define DIRICHLET_BOUNDARY_IS_CONNECTED     1 
+#define DIRICHLET_BOUNDARY_IS_CHECKED       2 
 
 ///////////////////////////////////////////////////////////////////////////////
 // Various globals
@@ -64,16 +89,19 @@ GLuint vao;
 ///////////////////////////////////////////////////////////////////////////////
 // Data for the particles
 ///////////////////////////////////////////////////////////////////////////////
-struct particle {
-	vec2 position;
-};
+vec2* particlePositions;
+vec2* particleVelocities;
+uint num_particles;
+int* particleTypes;
+
 
 GLuint posVBO;
 FboInfo fbo;
 
-particle* particles;
-const int NUM_PARTICLES = 20;
 
+void calculateConstantParameter() {
+
+}
 
 void updateGrid() {
 	labhelper::perf::Scope s( "Update Grid" );
@@ -82,31 +110,54 @@ void updateGrid() {
 void initParticles()
 {
 	// Allocate particles array
-	particles = new particle[NUM_PARTICLES];
+	particlePositions = new vec2[ARRAY_SIZE];
+	particleVelocities = new vec2[ARRAY_SIZE];
+	particleTypes = new int[ARRAY_SIZE];
 
-	// Define the target 2D box: from (-0.5, -0.5) to (0.5, 0.5)
-	const float minX = -0.5f, maxX = 0.5f;
-	const float minY = -0.5f, maxY = 0.5f;
+	int i = 0;
 
-	// Choose grid dimensions (nx * ny >= NUM_PARTICLES) to arrange particles evenly
-	int nx = (int)std::ceil(std::sqrt((float)NUM_PARTICLES));
-	int ny = (int)std::ceil((float)NUM_PARTICLES / (float)nx);
+	int nX = (int)(1.0/PARTICLE_DISTANCE)+5;  
+	int nY = (int)(0.6/PARTICLE_DISTANCE)+5;
+	bool particleGenerated = false;
 
-	int idx = 0;
-	for (int j = 0; j < ny; ++j)
-	{
-		for (int i = 0; i < nx; ++i)
-		{
-			if (idx >= NUM_PARTICLES) break;
-			float u = (nx == 1) ? 0.5f : (float)i / (float)(nx - 1);
-			float v = (ny == 1) ? 0.5f : (float)j / (float)(ny - 1);
-			particles[idx].position = vec2(
-				minX + u * (maxX - minX),
-				minY + v * (maxY - minY)
-			);
-			++idx;
+	for (int iX = -4; iX < nX; iX++) {
+		for (int iY = -4; iY < nY; iY++) {
+			float x = PARTICLE_DISTANCE * (float)iX;
+			float y = PARTICLE_DISTANCE * (float)iY;
+			
+			if( ((x>-4.0*PARTICLE_DISTANCE+EPS)&&(x<=1.00+4.0*PARTICLE_DISTANCE+EPS))&&( (y>0.0-4.0*PARTICLE_DISTANCE+EPS )&&(y<=0.6+EPS)) ){  /* dummy wall region */
+				particleTypes[i]=DUMMY_WALL;
+				particleGenerated = true;
+			}
+				
+			if( ((x>-2.0*PARTICLE_DISTANCE+EPS)&&(x<=1.00+2.0*PARTICLE_DISTANCE+EPS))&&( (y>0.0-2.0*PARTICLE_DISTANCE+EPS )&&(y<=0.6+EPS)) ){ /* wall region */
+				particleTypes[i]=WALL;
+				particleGenerated = true;
+			}
+			
+			if( ((x>-4.0*PARTICLE_DISTANCE+EPS)&&(x<=1.00+4.0*PARTICLE_DISTANCE+EPS))&&( (y>0.6-2.0*PARTICLE_DISTANCE+EPS )&&(y<=0.6+EPS)) ){  /* wall region */
+				particleTypes[i]=WALL;
+				particleGenerated = true;
+			}
+			
+			if( ((x>0.0+EPS)&&(x<=1.00+EPS))&&( y>0.0+EPS )){  /* empty region */
+				particleGenerated = false;
+			}
+			
+			if( ((x>0.0+EPS)&&(x<=0.25+EPS)) &&((y>0.0+EPS)&&(y<=0.50+EPS)) ){  /* fluid region */
+				particleTypes[i]=FLUID;
+				particleGenerated = true;
+			}
+
+			if( particleGenerated == true){
+				particlePositions[i] = vec2(x, y);
+				i++;
+			}
 		}
 	}
+	num_particles = i;
+	for(i=0;i<num_particles;i++) particleVelocities[i] = vec2(0.f);
+	printf("Particle amount: %d\n", num_particles);
 }
 
 
@@ -146,12 +197,12 @@ void initialize()
 	///////////////////////////////////////////////////////////////////////
 	glGenBuffers(1, &posVBO);
 	glBindBuffer(GL_ARRAY_BUFFER, posVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(particle) * NUM_PARTICLES, particles, GL_DYNAMIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vec2) * num_particles, particlePositions, GL_DYNAMIC_DRAW);
 
 	glGenVertexArrays(1, &vao);
 	glBindVertexArray(vao);
 
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(particle), 0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vec2), 0);
 	glEnableVertexAttribArray(0);
 
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -208,7 +259,7 @@ void display(void)
 		
 		glUseProgram(shaderProgram);
 		glBindVertexArray(vao);
-		glDrawArrays(GL_POINTS, 0, NUM_PARTICLES);
+		glDrawArrays(GL_POINTS, 0, num_particles);
 		glBindVertexArray(0);
 		
 	}
