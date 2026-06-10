@@ -60,6 +60,44 @@ using namespace glm;
 #define DIRICHLET_BOUNDARY_IS_CONNECTED     1 
 #define DIRICHLET_BOUNDARY_IS_CHECKED       2 
 
+void initializeParticlePositionAndVelocity( void );
+void calculateConstantParameter( void );
+void calculateNZeroAndLambda( void );
+double weight( double distance, double re );
+void mainLoopOfSimulation( void );
+void calculateGravity( void );
+void calculateViscosity( void );
+void moveParticle( void );
+void collision( void );
+void calculatePressure( void );
+void calculateParticleNumberDensity( void );
+void setBoundaryCondition( void );
+void setSourceTerm( void );
+void setMatrix( void );
+void exceptionalProcessingForBoundaryCondition( void );
+void checkBoundaryCondition( void );
+void increaseDiagonalTerm( void );
+void solveSimultaniousEquationsByGaussEliminationMethod( void );
+void removeNegativePressure( void );
+void setMinimumPressure( void );
+void calculatePressureGradient( void );
+void moveParticleUsingPressureGradient( void );
+void writeData_inProfFormat( void );
+void writeData_inVtuFormat( void );
+
+int    FileNumber;
+double Time;  
+int    NumberOfParticles;
+double Re_forParticleNumberDensity,Re2_forParticleNumberDensity; 
+double Re_forGradient,     Re2_forGradient; 
+double Re_forLaplacian,    Re2_forLaplacian; 
+double N0_forParticleNumberDensity;
+double N0_forGradient;
+double N0_forLaplacian;
+double Lambda;
+double collisionDistance,collisionDistance2;
+double FluidDensity;
+
 ///////////////////////////////////////////////////////////////////////////////
 // Various globals
 ///////////////////////////////////////////////////////////////////////////////
@@ -89,33 +127,32 @@ GLuint vao;
 ///////////////////////////////////////////////////////////////////////////////
 // Data for the particles
 ///////////////////////////////////////////////////////////////////////////////
-vec2* particlePositions;
-vec2* particleVelocities;
 uint num_particles;
-int* particleTypes;
+
+vec2 particlePositions[ARRAY_SIZE];
+vec2 particleVelocities[ARRAY_SIZE];
+vec2 particleAccelerationsvec2[ARRAY_SIZE];
+float particlePressures[ARRAY_SIZE];
+float particleNumberDensities[ARRAY_SIZE];
+float sourceTerms[ARRAY_SIZE];
+int boundaryCondtitions[ARRAY_SIZE];
+int particleTypes[ARRAY_SIZE];
+int flagForCheckingBoundaryCondition[ARRAY_SIZE];
+float coefficientMatrix[ARRAY_SIZE * ARRAY_SIZE];
+float minimumPressure[ARRAY_SIZE];
 
 
 GLuint posVBO;
 FboInfo fbo;
 
 
-void calculateConstantParameter() {
-
-}
-
 void updateGrid() {
 	labhelper::perf::Scope s( "Update Grid" );
 }
 
-void initParticles()
+void initializeParticlePositionAndVelocity()
 {
-	// Allocate particles array
-	particlePositions = new vec2[ARRAY_SIZE];
-	particleVelocities = new vec2[ARRAY_SIZE];
-	particleTypes = new int[ARRAY_SIZE];
-
 	int i = 0;
-
 	int nX = (int)(1.0/PARTICLE_DISTANCE)+5;  
 	int nY = (int)(0.6/PARTICLE_DISTANCE)+5;
 	bool particleGenerated = false;
@@ -124,6 +161,10 @@ void initParticles()
 		for (int iY = -4; iY < nY; iY++) {
 			float x = PARTICLE_DISTANCE * (float)iX;
 			float y = PARTICLE_DISTANCE * (float)iY;
+
+			//if (iX == nX - 1) printf("Max initial x-position: %f\n", x);
+			//if (iY == nY - 1) printf("Max initial y-position: %f\n", y);
+
 			
 			if( ((x>-4.0*PARTICLE_DISTANCE+EPS)&&(x<=1.00+4.0*PARTICLE_DISTANCE+EPS))&&( (y>0.0-4.0*PARTICLE_DISTANCE+EPS )&&(y<=0.6+EPS)) ){  /* dummy wall region */
 				particleTypes[i]=DUMMY_WALL;
@@ -160,6 +201,71 @@ void initParticles()
 	printf("Particle amount: %d\n", num_particles);
 }
 
+void calculateConstantParameter( void ){
+	Re_forParticleNumberDensity  = RADIUS_FOR_NUMBER_DENSITY;  
+	Re_forGradient       = RADIUS_FOR_GRADIENT;  
+	Re_forLaplacian      = RADIUS_FOR_LAPLACIAN;  
+	Re2_forParticleNumberDensity = Re_forParticleNumberDensity*Re_forParticleNumberDensity;
+	Re2_forGradient      = Re_forGradient*Re_forGradient;
+	Re2_forLaplacian     = Re_forLaplacian*Re_forLaplacian;
+	calculateNZeroAndLambda();
+	FluidDensity       = FLUID_DENSITY;
+	collisionDistance  = COLLISION_DISTANCE; 
+	collisionDistance2 = collisionDistance*collisionDistance;
+	FileNumber=0;
+	Time=0.0;
+}
+
+
+void calculateNZeroAndLambda( void ){
+	int iX, iY, iZ;
+	int iZ_start, iZ_end;
+	double xj, yj, zj, distance, distance2;
+	double xi, yi, zi;
+
+	if( DIM == 2 ){
+		iZ_start = 0; iZ_end = 1;
+	}else{
+		iZ_start = -4; iZ_end = 5;
+	}
+
+	N0_forParticleNumberDensity = 0.0;
+	N0_forGradient      = 0.0;
+	N0_forLaplacian     = 0.0;
+	Lambda              = 0.0;
+	xi = 0.0;  yi = 0.0;  zi = 0.0;
+
+	for(iX= -4;iX<5;iX++){
+		for(iY= -4;iY<5;iY++){
+		for(iZ= iZ_start;iZ<iZ_end;iZ++){
+		if( ((iX==0)&&(iY==0)) && (iZ==0) )continue;
+		xj = PARTICLE_DISTANCE * (double)(iX);
+		yj = PARTICLE_DISTANCE * (double)(iY);
+		zj = PARTICLE_DISTANCE * (double)(iZ);
+		distance2 = (xj-xi)*(xj-xi)+(yj-yi)*(yj-yi)+(zj-zi)*(zj-zi);
+		distance = sqrt(distance2);
+		N0_forParticleNumberDensity += weight(distance, Re_forParticleNumberDensity);
+		N0_forGradient      += weight(distance, Re_forGradient);
+		N0_forLaplacian     += weight(distance, Re_forLaplacian);
+		Lambda              += distance2 * weight(distance, Re_forLaplacian);
+		}
+		}
+	}
+	Lambda = Lambda/N0_forLaplacian;
+}
+
+
+double weight( double distance, double re ){
+	double weightIJ;
+
+	if( distance >= re ){
+		weightIJ = 0.0;
+	}else{
+		weightIJ = (re/distance) - 1.0;
+	}
+	return weightIJ;
+}
+
 
 void updateparticlePositions(float deltaTime, bool use_GPU)
 {
@@ -190,7 +296,7 @@ void initialize()
 	///////////////////////////////////////////////////////////////////////
 	loadShaders(false);
 
-	initParticles();
+	initializeParticlePositionAndVelocity();
 
 	///////////////////////////////////////////////////////////////////////
 	// Generate and bind buffers for graphics pipeline
