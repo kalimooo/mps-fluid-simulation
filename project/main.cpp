@@ -85,6 +85,11 @@ void moveParticleUsingPressureGradient( void );
 void writeData_inProfFormat( void );
 void writeData_inVtuFormat( void );
 
+void initialize( void );
+bool handleEvents( void );
+void display( void );
+void gui( void );
+
 int    FileNumber;
 double Time;  
 int    NumberOfParticles;
@@ -145,6 +150,56 @@ float minimumPressure[ARRAY_SIZE];
 GLuint posVBO;
 FboInfo fbo;
 
+int main(int argc, char* argv[])
+{
+	g_window = labhelper::init_window_SDL("OpenGL Project", 1920, 1080);
+
+	initialize();
+
+	bool stopRendering = false;
+	auto startTime = std::chrono::system_clock::now();
+
+	while(!stopRendering)
+	{
+		//update currentTime
+		std::chrono::duration<float> timeSinceStart = std::chrono::system_clock::now() - startTime;
+		previousTime = currentTime;
+		currentTime = timeSinceStart.count();
+		deltaTime = currentTime - previousTime;
+
+		// check events (keyboard among other)
+		stopRendering = handleEvents();
+
+		if (isPaused)
+		{
+			continue;
+		}
+
+		// Inform imgui of new frame
+		labhelper::newFrame( g_window );
+		
+		// Update particles
+		//updateparticlePositions(deltaTime, true);
+
+		//updateGrid();
+		
+		// render to window
+		display();
+
+		// Render overlay GUI.
+		gui();
+
+		// Finish the frame and render the GUI
+		labhelper::finishFrame();
+
+		// Swap front and back buffer. This frame will now been displayed.
+		SDL_GL_SwapWindow(g_window);
+	}
+
+	// Shut down everything. This includes the window and all other subsystems.
+	labhelper::shutDown(g_window);
+	return 0;
+}
 
 void updateGrid() {
 	labhelper::perf::Scope s( "Update Grid" );
@@ -218,42 +273,37 @@ void calculateConstantParameter( void ){
 
 
 void calculateNZeroAndLambda( void ){
-	int iX, iY, iZ;
-	int iZ_start, iZ_end;
-	double xj, yj, zj, distance, distance2;
-	double xi, yi, zi;
-
-	if( DIM == 2 ){
-		iZ_start = 0; iZ_end = 1;
-	}else{
-		iZ_start = -4; iZ_end = 5;
-	}
+	int iX, iY;
+	float xj, yj, distance, distance2;
+	float xi, yi;
 
 	N0_forParticleNumberDensity = 0.0;
 	N0_forGradient      = 0.0;
 	N0_forLaplacian     = 0.0;
 	Lambda              = 0.0;
-	xi = 0.0;  yi = 0.0;  zi = 0.0;
+	xi = 0.0;  yi = 0.0;
 
-	for(iX= -4;iX<5;iX++){
-		for(iY= -4;iY<5;iY++){
-		for(iZ= iZ_start;iZ<iZ_end;iZ++){
-		if( ((iX==0)&&(iY==0)) && (iZ==0) )continue;
-		xj = PARTICLE_DISTANCE * (double)(iX);
-		yj = PARTICLE_DISTANCE * (double)(iY);
-		zj = PARTICLE_DISTANCE * (double)(iZ);
-		distance2 = (xj-xi)*(xj-xi)+(yj-yi)*(yj-yi)+(zj-zi)*(zj-zi);
-		distance = sqrt(distance2);
-		N0_forParticleNumberDensity += weight(distance, Re_forParticleNumberDensity);
-		N0_forGradient      += weight(distance, Re_forGradient);
-		N0_forLaplacian     += weight(distance, Re_forLaplacian);
-		Lambda              += distance2 * weight(distance, Re_forLaplacian);
-		}
+	for(iX = -4; iX<5 ; iX++){
+		for(iY = -4 ; iY<5 ; iY++){
+			if( ((iX==0)&&(iY==0))) continue;
+			xj = PARTICLE_DISTANCE * (float)(iX);
+			yj = PARTICLE_DISTANCE * (float)(iY);
+			distance2 = (xj-xi)*(xj-xi)+(yj-yi)*(yj-yi);
+			distance = sqrt(distance2);
+			//printf("Distance: %d\n", distance);
+			N0_forParticleNumberDensity += weight(distance, Re_forParticleNumberDensity);
+			N0_forGradient      += weight(distance, Re_forGradient);
+			N0_forLaplacian     += weight(distance, Re_forLaplacian);
+			Lambda              += distance2 * weight(distance, Re_forLaplacian);
 		}
 	}
 	Lambda = Lambda/N0_forLaplacian;
-}
 
+	printf("N0 particle number density: %f\n", N0_forParticleNumberDensity);
+	printf("N0 particle gradient: %f\n", N0_forGradient);
+	printf("N0 particle laplacian: %f\n", N0_forLaplacian);
+	printf("Lambda: %f\n", Lambda);
+}
 
 double weight( double distance, double re ){
 	double weightIJ;
@@ -297,6 +347,7 @@ void initialize()
 	loadShaders(false);
 
 	initializeParticlePositionAndVelocity();
+	calculateConstantParameter();
 
 	///////////////////////////////////////////////////////////////////////
 	// Generate and bind buffers for graphics pipeline
@@ -465,53 +516,4 @@ void gui()
 	labhelper::perf::drawEventsWindow();
 }
 
-int main(int argc, char* argv[])
-{
-	g_window = labhelper::init_window_SDL("OpenGL Project", 1920, 1080);
 
-	initialize();
-
-	bool stopRendering = false;
-	auto startTime = std::chrono::system_clock::now();
-
-	while(!stopRendering)
-	{
-		//update currentTime
-		std::chrono::duration<float> timeSinceStart = std::chrono::system_clock::now() - startTime;
-		previousTime = currentTime;
-		currentTime = timeSinceStart.count();
-		deltaTime = currentTime - previousTime;
-
-		// check events (keyboard among other)
-		stopRendering = handleEvents();
-
-		if (isPaused)
-		{
-			continue;
-		}
-
-		// Inform imgui of new frame
-		labhelper::newFrame( g_window );
-		
-		// Update particles
-		updateparticlePositions(deltaTime, true);
-
-		updateGrid();
-		
-		// render to window
-		display();
-
-		// Render overlay GUI.
-		gui();
-
-		// Finish the frame and render the GUI
-		labhelper::finishFrame();
-
-		// Swap front and back buffer. This frame will now been displayed.
-		SDL_GL_SwapWindow(g_window);
-	}
-
-	// Shut down everything. This includes the window and all other subsystems.
-	labhelper::shutDown(g_window);
-	return 0;
-}
